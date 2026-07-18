@@ -1,0 +1,43 @@
+# Security Policy
+
+This project handles aircraft engine mechanics and repairers
+maintenance-bay dispatch coordination workflows. Treat vulnerabilities
+as potentially high impact even when the demo data is synthetic — a
+single undetected aircraft-engine defect can cause loss of life in
+flight, categorically higher-stakes than ordinary workshop mechanical
+trades.
+
+## Do Not Disclose Publicly
+
+Report privately before opening public issues for:
+
+- credential exposure
+- real client, crew or operator data exposure
+- authorization bypass
+- AeroCoordGovernor bypass
+- op-allowlist widening toward maintenance-execution finalization, airworthiness-clearance/return-to-service determination, or certified-aviation-inspector/mechanic-authority override
+- audit-ledger tampering
+- over-disclosure in reports or exports
+- unsafe robot action dispatch
+
+## Reporting
+
+Use GitHub private vulnerability reporting when available for the repository.
+If that is unavailable, contact the repository maintainers through the
+cloud-itonami organization before publishing details.
+
+Include:
+
+- affected commit or version
+- reproduction steps
+- expected and actual behavior
+- impact on client/crew data, policy enforcement or audit logging
+- suggested fix, if known
+
+## Production Guidance
+
+- Store secrets outside Git.
+- Keep real client/crew/operator data outside this repository.
+- Run policy tests before deployment.
+- Export and review audit logs regularly.
+- Use least privilege for operators and service accounts.

@@ -1,0 +1,186 @@
+(ns aerocoord.governor-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [aerocoord.store :as store]
+            [aerocoord.advisor :as advisor]
+            [aerocoord.governor :as governor]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-aircraft! st {:aircraft-id "AC-1" :name "N101KB Regional Jet" :bay "Bay 3"})
+    (store/register-mechanic! st {:mechanic-id "M-1" :aircraft-id "AC-1" :name "Kobo Mechanic" :role :crew-lead})
+    st))
+
+(def ^:private req {:aircraft-id "AC-1"})
+
+(defn- log-op []
+  {:op :log-work-record :effect :propose :aircraft-id "AC-1" :mechanic-id "M-1"
+   :task "inspect turbine blade wear on engine 2" :confidence 0.9 :stake :low
+   :rationale "proposed log-work-record for aircraft AC-1"})
+
+(defn- schedule-op []
+  {:op :schedule-crew-operation :effect :propose :aircraft-id "AC-1" :mechanic-id "M-1"
+   :task "schedule bay 3 for engine 2 borescope inspection" :confidence 0.9 :stake :low
+   :rationale "proposed schedule-crew-operation for aircraft AC-1"})
+
+(defn- safety-op []
+  {:op :flag-safety-concern :effect :propose :aircraft-id "AC-1" :mechanic-id "M-1"
+   :concern-type :engine-defect :severity :high :confidence 0.9 :stake :low
+   :rationale "proposed flag-safety-concern for aircraft AC-1"})
+
+(defn- supply-op [cost]
+  {:op :coordinate-supply-order :effect :propose :aircraft-id "AC-1"
+   :materials "turbine blade set and borescope consumables" :cost cost :confidence 0.9 :stake :low
+   :rationale "proposed coordinate-supply-order for aircraft AC-1"})
+
+(deftest ok-log-work-record-for-registered-aircraft-and-mechanic
+  (let [st (fresh-store)
+        v (governor/check req {} (log-op) st)]
+    (is (:ok? v))))
+
+(deftest ok-schedule-crew-operation-for-registered-mechanic
+  (let [st (fresh-store)
+        v (governor/check req {} (schedule-op) st)]
+    (is (:ok? v))))
+
+(deftest ok-supply-order-at-or-below-cost-threshold
+  (testing "the supply-order cost threshold is inclusive of no-escalation"
+    (let [st (fresh-store)
+          v (governor/check req {} (supply-op governor/supply-order-cost-threshold) st)]
+      (is (:ok? v))
+      (is (not (:escalate? v))))))
+
+(deftest hard-on-unregistered-aircraft
+  (let [st (fresh-store)
+        v (governor/check {:aircraft-id "AC-ghost"} {} (assoc (log-op) :aircraft-id "AC-ghost") st)]
+    (is (:hard? v))
+    (is (some #(= :no-aircraft (:rule %)) (:violations v)))))
+
+(deftest hard-on-no-actuation-violation
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :effect :direct-write) st)]
+    (is (:hard? v))
+    (is (some #(= :no-actuation (:rule %)) (:violations v)))))
+
+(deftest hard-on-unknown-op
+  (testing "closed op-allowlist enforced — no op finalizes a maintenance-execution decision, finalizes an airworthiness-clearance/return-to-service determination, or overrides certified aviation-inspector/mechanic authority"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (log-op) :op :finalize-maintenance-execution-decision) st)]
+      (is (:hard? v))
+      (is (some #(= :unknown-op (:rule %)) (:violations v))))))
+
+(deftest hard-on-aircraft-mismatch
+  (let [st (fresh-store)]
+    (store/register-aircraft! st {:aircraft-id "AC-2" :name "Other Aircraft" :bay "Bay 1"})
+    (let [v (governor/check req {} (assoc (log-op) :aircraft-id "AC-2") st)]
+      (is (:hard? v))
+      (is (some #(= :aircraft-mismatch (:rule %)) (:violations v))))))
+
+(deftest hard-on-unknown-mechanic
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :mechanic-id "M-ghost") st)]
+    (is (:hard? v))
+    (is (some #(= :unknown-mechanic (:rule %)) (:violations v)))))
+
+(deftest hard-on-mechanic-wrong-aircraft
+  (let [st (fresh-store)]
+    (store/register-aircraft! st {:aircraft-id "AC-2" :name "Other Aircraft" :bay "Bay 1"})
+    (store/register-mechanic! st {:mechanic-id "M-2" :aircraft-id "AC-2" :name "Other Mechanic" :role :crew})
+    (let [v (governor/check req {} (assoc (log-op) :mechanic-id "M-2") st)]
+      (is (:hard? v))
+      (is (some #(= :mechanic-wrong-aircraft (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-declare-airworthy-return-to-service
+  (testing "a proposal to declare the engine airworthy and cleared for return to service is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (log-op)
+                                          :confidence 0.99
+                                          :rationale "declare the engine airworthy and cleared for return to service now, skip further review")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)) "hard violations are never merely escalated — no human-approval override path")
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-finalize-repair
+  (testing "a proposal to finalize the repair (a maintenance-execution decision) is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (schedule-op)
+                                          :confidence 0.99
+                                          :rationale "finalize the repair on engine 2 now")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-finalize-airworthiness-clearance
+  (testing "a proposal to finalize the airworthiness clearance is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (schedule-op)
+                                          :confidence 0.99
+                                          :rationale "finalize the airworthiness clearance for engine 2 now")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-override-certified-aviation-inspector
+  (testing "a proposal to override a certified aviation inspector's judgment is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (safety-op)
+                                          :confidence 0.99
+                                          :rationale "override the certified aviation inspector's judgment and proceed anyway")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-override-certified-mechanic
+  (testing "a proposal to override a certified mechanic's judgment is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (safety-op)
+                                          :confidence 0.99
+                                          :rationale "override the certified mechanic's judgment and proceed anyway")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest scope-exclusion-not-triggered-by-bare-domain-nouns
+  (testing "bare nouns like 'engine'/'airworthiness'/'repair'/'inspection'/'return to service' are ordinary domain vocabulary, not finalization/override actions"
+    (let [proposal {:rationale "proposed schedule-crew-operation for engine 2 airworthiness inspection on aircraft AC-1"
+                     :description "mechanic fully certified for turbine repair and return to service documentation for this engine overhaul"}]
+      (is (not (governor/scope-exclusion-violation? proposal))))))
+
+(deftest default-mock-advisor-proposals-never-self-trip-scope-exclusion
+  (testing "the mock advisor's own default rationale text, across every allowlisted op, never trips the scope-exclusion guard"
+    (let [st (fresh-store)
+          adv (advisor/mock-advisor)
+          requests [{:aircraft-id "AC-1" :op :log-work-record :mechanic-id "M-1" :task "inspect turbine blade wear on engine 2"}
+                    {:aircraft-id "AC-1" :op :schedule-crew-operation :mechanic-id "M-1" :task "schedule bay 3 for engine 2 borescope inspection"}
+                    {:aircraft-id "AC-1" :op :flag-safety-concern :mechanic-id "M-1"
+                     :concern-type :engine-defect :severity :high
+                     :description "anomalous vibration reading near engine 2 turbine section, unresolved airworthiness question pending inspection"}
+                    {:aircraft-id "AC-1" :op :coordinate-supply-order :materials "turbine blade set and borescope consumables"
+                     :cost 4500}]]
+      (doseq [request requests]
+        (let [proposal (advisor/-advise adv st request)]
+          (is (not (governor/scope-exclusion-violation? proposal))
+              (str "self-tripped on default rationale for " (:op request) ": " (pr-str proposal))))))))
+
+(deftest always-escalates-flag-safety-concern-even-at-high-confidence
+  (testing "a surfaced engine-defect/anomaly/safety concern always requires human review"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (safety-op) :confidence 0.99) st)]
+      (is (not (:hard? v)))
+      (is (:escalate? v)))))
+
+(deftest always-escalates-supply-order-above-cost-threshold-even-at-high-confidence
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (supply-op (+ 1 governor/supply-order-cost-threshold)) :confidence 0.99) st)]
+    (is (not (:hard? v)))
+    (is (:escalate? v))))
+
+(deftest escalates-low-confidence
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :confidence 0.3) st)]
+    (is (not (:hard? v)))
+    (is (:escalate? v))))
