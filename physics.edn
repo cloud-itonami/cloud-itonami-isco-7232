@@ -1,0 +1,37 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:physics` runs it.
+;;
+;; README "Robotics premise": a maintenance-bay scheduling/logistics
+;; coordination robot for aircraft engine mechanics (ISCO 7232) logs work
+;; records, proposes crew/bay schedules, surfaces safety concerns and
+;; coordinates parts/consumables orders; it never maintains engines and never
+;; decides airworthiness. Its physical work is bay logistics: towing an engine
+;; on its transport stand into the bay; the physics its bay schedule depends
+;; on is how long after shutdown the engine case has cooled enough for the
+;; crew to start work.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isco-7232"
+ :cases
+ [{:id :engine-stand-tow
+   :kind :transport
+   :procedure "bay tug tows a removed engine on its transport stand 60 m from the hangar door to the maintenance bay; the tug's drive force (tug size) is swept"
+   :params {:mass-kg 1500.0 :distance-m 60.0 :v-max-mps 0.8 :a-max-mps2 0.2
+            :brake-decel-mps2 0.4 :payload-kg 4000.0 :crr 0.015
+            :cog-height-m 0.50 :support-half-length-m 1.00 :payload-cog-height-m 1.40}
+   :sweep {:param :drive-force-n :values [900.0 1000.0 1200.0 1600.0 2500.0 4000.0]}
+   :quantity :cycle-time-s
+   :limit {:max 90.0 :basis "estimate: the tow step's slot in the bay changeover schedule"}
+   :boundary {:lo 850.0 :hi 5000.0}}
+  {:id :case-cooldown-after-shutdown
+   :kind :thermal
+   :procedure "after shutdown an 8 mm nickel-alloy engine case at ~350 C cools by natural convection inside (nacelle air) and outside (hangar air at 20 C); the waiting time before the crew touches it is swept"
+   :params {:thickness-m 0.008 :conductivity-w-mk 11.0 :density-kg-m3 8200.0 :specific-heat-j-kgk 450.0
+            :t0-c 350.0 :t-hot-c 20.0 :h-front-w-m2k 5.0 :t-back-ambient-c 20.0 :h-back-w-m2k 10.0
+            :threshold-c 1000.0 :nodes 5}
+   :sweep {:param :duration-s :values [900.0 1800.0 2700.0 3600.0 5400.0 7200.0]}
+   :quantity :final-back-c
+   :limit {:max 60.0 :basis "estimate: order of the surface temperature commonly treated as safe for bare-hand contact with metal (the exact ISO 13732-1 value for the contact time is not verified here)"}
+   :boundary {:lo 300.0 :hi 14400.0}}]}
