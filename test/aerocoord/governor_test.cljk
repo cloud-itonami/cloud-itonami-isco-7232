@@ -1,5 +1,5 @@
 (ns aerocoord.governor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [aerocoord.store :as store]
             [aerocoord.advisor :as advisor]
             [aerocoord.governor :as governor]))
