@@ -1,5 +1,5 @@
 (ns aerocoord.actor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [aerocoord.actor :as actor]
             [aerocoord.store :as store]))
 
